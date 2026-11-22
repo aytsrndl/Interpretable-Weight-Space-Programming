@@ -28,8 +28,10 @@ import config
 import sandbox
 from evaluator import score
 from llm import LLM, BudgetExceeded
-from model import MAX_LEN, N_VOCAB, VOCAB
-from tasks import TASKS, dataset
+import numpy as np
+
+from model import MAX_LEN, N_VOCAB, TOK, VOCAB
+from tasks import TASKS, dataset, encode_prompt
 
 RUNS = Path(__file__).resolve().parent / "runs"
 
@@ -53,10 +55,12 @@ MAX_LEN = {MAX_LEN} positions.
 
     x = W_E[tokens] + W_pos[0..T-1]                    # residual stream, shape (T, d_model)
     for l in range(n_layers):
-        for h in range(n_heads):
+        out = 0
+        for h in range(n_heads):                          # heads run in parallel on the same x
             q, k, v = x @ W_Q[h], x @ W_K[h], x @ W_V[h]   # layer l's matrices
             A = softmax(q @ k.T with causal mask)          # NO 1/sqrt(d_head) scaling
-            x = x + (A @ v) @ W_O[h]
+            out = out + (A @ v) @ W_O[h]
+        x = x + out
         if d_mlp > 0:
             x = x + relu(x @ W_in + b_in) @ W_out + b_out
     logits = x @ W_U                                    # no LayerNorm anywhere
@@ -81,7 +85,9 @@ tokens must match exactly.
 SANDBOX: your code runs isolated. Available without import: np, math, VOCAB, TOK (token -> id), \
 N_VOCAB, MAX_LEN. Only `import numpy` / `import math` are allowed. Not allowed: file I/O, \
 getattr/eval/exec, any name or attribute starting with "_", str.format (f-strings are fine). \
-print() output is shown back to you. Timeout {config.SANDBOX_TIMEOUT_S} s.
+print() output is shown back to you. To debug, you may call \
+`logits, attn = model.forward(tokens, return_attn=True)` inside write_weights (tokens: int array \
+(T,) or (B, T)); attn["L0.H0"][i, j] is how much position i attends to position j. Timeout {config.SANDBOX_TIMEOUT_S} s.
 
 REPLY FORMAT (exactly this):
 JUSTIFICATION: <1-3 sentences: what changed and why>
@@ -135,6 +141,8 @@ def build_user_prompt(task_name: str, history: list[dict], best: dict | None, ph
             if last["failures"]:
                 fb.append("Failures (input, expected, got):\n"
                           + "\n".join(f"  {x} -> expected {e}, got {g}" for x, e, g in last["failures"]))
+            if last.get("attention"):
+                fb.append(last["attention"])
         if last["stdout"]:
             fb.append(f"Your print() output:\n{last['stdout'][-1500:]}")
         if best is None or last["iter"] != best["iter"]:
@@ -148,6 +156,28 @@ def build_user_prompt(task_name: str, history: list[dict], best: dict | None, ph
                      f"lower param_count below {best['param_count']} while keeping 100%, e.g. by "
                      f"shrinking CONFIG and packing subspaces. Keep it readable.")
     return "\n\n".join(parts)
+
+
+def attention_report(model, task_name: str, x: str, y: str) -> str:
+    """For one (visible) example, show where each answer-predicting position attends.
+
+    Uses teacher forcing: the model sees the true sequence BOS x sep y, so each line shows
+    what the model would predict at that step if all previous answer tokens were right.
+    """
+    task = TASKS[task_name]
+    seq = encode_prompt(task, x) + [TOK[c] for c in y]
+    names = ["BOS", *x, task.sep, *y]
+    logits, attn = model.forward(np.array(seq[:-1]), return_attn=True)
+    lines = [f"Attention on {x} -> {y} (teacher-forced; top-2 attended positions per head):"]
+    for i in range(task.output_len):
+        p = task.prompt_len - 1 + i
+        pred = VOCAB[int(logits[p].argmax())]
+        heads = []
+        for name, A in attn.items():
+            top = np.argsort(A[p])[::-1][:2]
+            heads.append(f"{name}: " + ", ".join(f"pos{j}({names[j]})={A[p, j]:.2f}" for j in top))
+        lines.append(f"  pos {p} -> predicts {pred!r}, should be {y[i]!r} | " + " | ".join(heads))
+    return "\n".join(lines)
 
 
 CODE_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
@@ -210,6 +240,10 @@ def run_task(task_name: str, llm, max_iters: int = config.MAX_ITERS,
                 rec.update(accuracy=s.accuracy, failures=s.failures,
                            param_count=res.model.param_count(),
                            nonzero_params=res.model.nonzero_param_count())
+                if s.failures:
+                    x, y, _ = s.failures[0]
+                    with np.errstate(all="ignore"):
+                        rec["attention"] = attention_report(res.model, task_name, x, y)
         rec["seconds"] = round(time.time() - t0, 1)
         history.append(rec)
         (out_dir / f"iter_{it:02d}.json").write_text(json.dumps(rec, indent=2))

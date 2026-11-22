@@ -104,3 +104,32 @@ def test_llm_streams_and_counts_tokens(tmp_path):
     assert seen["stream"] is True and seen["stream_options"] == {"include_usage": True}
     assert r.text == "JUSTIFICATION: hi\n```python\nx=1\n```"
     assert (r.input_tokens, r.output_tokens) == (100, 40) and m.budget.total_tokens == 140
+
+
+def test_heads_are_parallel_and_attn_returned():
+    """Two heads must both read the same x: head 1's output must not feed head 0... or vice versa."""
+    import numpy as np
+
+    from model import Model, ModelConfig
+    m = Model(ModelConfig(d_model=6, n_layers=1, n_heads=2, d_head=3, d_mlp=0))
+    rng = np.random.default_rng(1)
+    for k in m.w:
+        m.w[k] = rng.normal(size=m.w[k].shape)
+    toks = rng.integers(0, 15, size=8)
+    logits, attn = m.forward(toks, return_attn=True)
+    assert set(attn) == {"L0.H0", "L0.H1"} and np.allclose(attn["L0.H0"].sum(-1), 1)
+    # parallel semantics: total = embed + sum of each head computed alone
+    x0 = m.w["W_E"][toks] + m.w["W_pos"][:8]
+    one_at_a_time = x0.copy()
+    for h in range(2):
+        q, k, v = (x0 @ m.w[f"L0.W_{n}"][h] for n in "QKV")
+        s = np.where(np.tril(np.ones((8, 8), bool)), q @ k.T, -np.inf)
+        A = np.exp(s - s.max(-1, keepdims=True)); A /= A.sum(-1, keepdims=True)
+        one_at_a_time += A @ v @ m.w["L0.W_O"][h]
+    assert np.allclose(logits, one_at_a_time @ m.w["W_U"])
+
+
+def test_failure_feedback_includes_attention(tmp_path):
+    llm = FakeLLM([reply(ZEROS), reply(REVERSE_OK)])
+    agent_loop.run_task("reverse", llm, max_iters=2, compress=False, out_dir=tmp_path)
+    assert "Attention on" in llm.calls[1][1]["content"]

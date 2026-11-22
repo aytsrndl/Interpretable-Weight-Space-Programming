@@ -7,10 +7,9 @@ Forward pass, for a sequence of T tokens:
 
     x = W_E[tokens] + W_pos[0..T-1]                    # residual stream, (T, d_model)
     for each layer l:
-        for each head h:                               # causal self-attention
-            q, k, v = x @ W_Q[h], x @ W_K[h], x @ W_V[h]
-            A = softmax(causal_mask(q @ k.T))
-            x = x + (A @ v) @ W_O[h]
+        # causal self-attention; every head reads the same x, outputs are summed
+        x = x + sum over heads h of softmax(causal_mask(q_h @ k_h.T)) @ v_h @ W_O[h]
+            where q_h, k_h, v_h = x @ W_Q[h], x @ W_K[h], x @ W_V[h]
         x = x + relu(x @ W_in + b_in) @ W_out + b_out  # MLP (skipped if d_mlp == 0)
     logits = x @ W_U
 
@@ -72,8 +71,12 @@ class Model:
         return int(sum(np.count_nonzero(a) for a in self.w.values()))
 
     # ---- forward pass ---------------------------------------------------------
-    def forward(self, tokens: np.ndarray) -> np.ndarray:
-        """tokens: int array (B, T) or (T,).  Returns logits (B, T, N_VOCAB) or (T, N_VOCAB)."""
+    def forward(self, tokens: np.ndarray, return_attn: bool = False):
+        """tokens: int array (B, T) or (T,).  Returns logits (B, T, N_VOCAB) or (T, N_VOCAB).
+
+        With return_attn=True, returns (logits, attn) where attn[f"L{l}.H{h}"][..., i, j] is how
+        much query position i attends to key position j. Useful for debugging hand-set weights.
+        """
         tokens = np.asarray(tokens)
         single = tokens.ndim == 1
         if single:
@@ -85,8 +88,10 @@ class Model:
         x = w["W_E"][tokens] + w["W_pos"][:T][None, :, :]  # (B, T, d)
         causal = np.tril(np.ones((T, T), dtype=bool))       # key j visible to query i iff j <= i
 
+        attn = {}  # f"L{l}.H{h}" -> attention weights (B, T, T), row i = where query i looks
         for l in range(self.cfg.n_layers):
-            for h in range(self.cfg.n_heads):
+            head_out = np.zeros_like(x)
+            for h in range(self.cfg.n_heads):  # all heads read the SAME x (run in parallel)
                 q = x @ w[f"L{l}.W_Q"][h]  # (B, T, dh)
                 k = x @ w[f"L{l}.W_K"][h]
                 v = x @ w[f"L{l}.W_V"][h]
@@ -95,13 +100,17 @@ class Model:
                 scores = scores - scores.max(axis=-1, keepdims=True)  # numerical stability
                 A = np.exp(scores)
                 A = A / A.sum(axis=-1, keepdims=True)
-                x = x + (A @ v) @ w[f"L{l}.W_O"][h]
+                attn[f"L{l}.H{h}"] = A
+                head_out = head_out + (A @ v) @ w[f"L{l}.W_O"][h]
+            x = x + head_out
             if self.cfg.d_mlp > 0:
                 hidden = np.maximum(0.0, x @ w[f"L{l}.W_in"] + w[f"L{l}.b_in"])
                 x = x + hidden @ w[f"L{l}.W_out"] + w[f"L{l}.b_out"]
 
         logits = x @ w["W_U"]
-        return logits[0] if single else logits
+        if single:
+            logits, attn = logits[0], {k: a[0] for k, a in attn.items()}
+        return (logits, attn) if return_attn else logits
 
     def generate(self, prompts: np.ndarray, n_new: int) -> np.ndarray:
         """Greedy decoding. prompts: (B, T0) ints. Returns the n_new generated tokens, (B, n_new).
