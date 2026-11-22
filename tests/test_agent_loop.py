@@ -11,7 +11,7 @@ from tests.fixtures import REVERSE_OK, ZEROS
 
 
 def reply(code, why="test"):
-    return f"JUSTIFICATION: {why}\n```python\n{code}\n```"
+    return f"```python\n# JUSTIFICATION: {why}\n{code}\n```"
 
 
 SMALLER = REVERSE_OK.replace("W_U\"][SCRATCH + d, d] = 1.0",
@@ -40,7 +40,7 @@ def test_prompts_never_read_hidden_split(monkeypatch):
 
 def test_loop_recovers_from_errors_then_solves(tmp_path):
     llm = FakeLLM([
-        "I forgot the code block.",
+        "I forgot the code block.", "Still no code.",          # iter 1: reply + retry, both empty
         reply("import os\ndef write_weights(model): pass"),  # rejected by sandbox
         reply(ZEROS, "zeros"),                                 # runs, ~0%
         reply(REVERSE_OK, "copy head"),                        # 100%
@@ -53,7 +53,7 @@ def test_loop_recovers_from_errors_then_solves(tmp_path):
     it2 = json.loads((tmp_path / "iter_02.json").read_text())
     assert "Rejected" in it2["error"]
     # feedback reached the agent: the 4th prompt mentions the 3rd attempt's failures
-    assert "expected" in llm.calls[3][1]["content"]
+    assert "expected" in llm.calls[4][1]["content"]
     assert (tmp_path / "best.py").exists() and (tmp_path / "best.npz").exists()
 
 
@@ -133,3 +133,12 @@ def test_failure_feedback_includes_attention(tmp_path):
     llm = FakeLLM([reply(ZEROS), reply(REVERSE_OK)])
     agent_loop.run_task("reverse", llm, max_iters=2, compress=False, out_dir=tmp_path)
     assert "Attention on" in llm.calls[1][1]["content"]
+
+
+def test_missing_code_is_retried_within_the_same_iteration(tmp_path):
+    llm = FakeLLM(["JUSTIFICATION: I will shrink d_model.", reply(REVERSE_OK, "copy head")])
+    s = agent_loop.run_task("reverse", llm, max_iters=1, compress=False, out_dir=tmp_path)
+    assert s["best_visible"] == 1.0 and s["iterations"] == 1
+    assert "no ```python code block" in llm.calls[1][-1]["content"]
+    rec = json.loads((tmp_path / "iter_01.json").read_text())
+    assert rec["retried"] and rec["justification"] == "copy head"

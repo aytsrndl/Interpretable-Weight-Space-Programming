@@ -47,7 +47,7 @@ reason you can state.
 - All else being equal, more interpretable is better. A small accuracy gain that adds ugly \
 complexity is not worth it. Parameter count is a proxy, but the real criterion is \
 human-understandable structure in the weights.
-- Each revision starts with a short justification of what you changed and why.
+- Each revision starts with a one-line comment justifying what you changed and why.
 
 THE MODEL (numpy, fixed code you cannot change)
 Vocabulary ({N_VOCAB} tokens, id = index): {VOCAB}. Digit tokens have id == digit value.
@@ -89,13 +89,18 @@ print() output is shown back to you. To debug, you may call \
 `logits, attn = model.forward(tokens, return_attn=True)` inside write_weights (tokens: int array \
 (T,) or (B, T)); attn["L0.H0"][i, j] is how much position i attends to position j. Timeout {config.SANDBOX_TIMEOUT_S} s.
 
-REPLY FORMAT (exactly this):
-JUSTIFICATION: <1-3 sentences: what changed and why>
+REPLY FORMAT: your reply is ONE python code block and nothing else. Its first line is the \
+justification comment:
 ```python
+# JUSTIFICATION: <1-3 sentences: what changed and why>
 CONFIG = dict(...)   # optional
 def write_weights(model):
     ...
-```"""
+```
+Do not stop after the justification: the code block must contain the full write_weights."""
+
+NO_CODE_NUDGE = ("Your reply contained no ```python code block. Reply now with ONLY the code block "
+                 "(first line # JUSTIFICATION: ...), containing the complete write_weights.")
 
 
 def format_examples(task_name: str, k: int = 5) -> str:
@@ -181,16 +186,17 @@ def attention_report(model, task_name: str, x: str, y: str) -> str:
 
 
 CODE_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
-JUST_RE = re.compile(r"JUSTIFICATION:\s*(.+?)(?:\n\s*\n|```|$)", re.DOTALL)
+JUST_RE = re.compile(r"JUSTIFICATION:\s*(.+?)(?:\n\s*\n|\n(?!#)|```|$)", re.DOTALL)
 
 
 def parse_reply(text: str) -> tuple[str, str]:
     """Returns (code, justification). code is "" if no code block was found."""
     blocks = CODE_RE.findall(text)
     code = blocks[-1].strip() if blocks else ""
-    m = JUST_RE.search(text)
-    just = m.group(1).strip() if m else text.split("```")[0].strip()
-    return code, " ".join(just.split())[:500]
+    m = JUST_RE.search(text)  # finds "# JUSTIFICATION:" inside the code, or a bare line outside it
+    just = m.group(1) if m else text.split("```")[0]
+    just = " ".join(line.strip().lstrip("#").strip() for line in just.strip().splitlines())
+    return code, just[:500]
 
 
 # ---- the loop ----------------------------------------------------------------------
@@ -215,19 +221,27 @@ def run_task(task_name: str, llm, max_iters: int = config.MAX_ITERS,
             break
 
         prompt = build_user_prompt(task_name, history, best, phase)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
         t0 = time.time()
         try:
-            reply = llm.chat([{"role": "system", "content": SYSTEM_PROMPT},
-                              {"role": "user", "content": prompt}])
+            reply = llm.chat(messages)
+            n_in, n_out, raw = reply.input_tokens, reply.output_tokens, reply.text
+            code, justification = parse_reply(reply.text)
+            if not code:  # some models stop after the justification line: ask once more, same iteration
+                retry = llm.chat(messages + [{"role": "assistant", "content": reply.text},
+                                             {"role": "user", "content": NO_CODE_NUDGE}])
+                n_in, n_out = n_in + retry.input_tokens, n_out + retry.output_tokens
+                raw = reply.text + "\n\n[RETRY]\n" + retry.text
+                code, just2 = parse_reply(retry.text)
+                justification = justification if justification and not code else (just2 or justification)
         except BudgetExceeded as e:
             stop_reason = f"budget: {e}"
             break
 
-        code, justification = parse_reply(reply.text)
         rec = {"iter": it, "phase": phase, "code": code, "justification": justification,
                "accuracy": 0.0, "param_count": 0, "nonzero_params": 0, "failures": [],
-               "error": "", "stdout": "", "input_tokens": reply.input_tokens,
-               "output_tokens": reply.output_tokens, "raw_reply": reply.text}
+               "error": "", "stdout": "", "input_tokens": n_in,
+               "output_tokens": n_out, "raw_reply": raw, "retried": raw is not reply.text}
         if not code:
             rec["error"] = "No ```python code block found in your reply."
         else:
