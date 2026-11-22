@@ -87,12 +87,31 @@ class LLM:
                       max_tokens=config.MAX_OUTPUT_TOKENS)
         if seed is not None and self.provider == "arc":
             kwargs["seed"] = seed  # vLLM honors this; not every provider accepts it
-        resp = self.client.chat.completions.create(**kwargs)
-        usage = resp.usage
-        reply = Reply(resp.choices[0].message.content or "",
-                      usage.prompt_tokens if usage else 0, usage.completion_tokens if usage else 0)
-        self.budget.add(self.provider, reply.input_tokens, reply.output_tokens)
-        return reply
+
+        # Stream: ARC's gateway caps NON-streaming requests at 8,000 output tokens,
+        # and reasoning models can spend that much thinking before writing any code.
+        # include_usage asks for a final chunk carrying the token counts.
+        stream = self.client.chat.completions.create(
+            **kwargs, stream=True, stream_options={"include_usage": True})
+        text, reasoning_chars, usage = [], 0, None
+        for chunk in stream:
+            if chunk.usage:
+                usage = chunk.usage
+            for choice in chunk.choices:
+                delta = choice.delta
+                if delta.content:
+                    text.append(delta.content)
+                # reasoning arrives in a separate field on some servers; count it, don't keep it
+                reasoning_chars += len(getattr(delta, "reasoning_content", None) or "")
+        text = "".join(text)
+
+        if usage:
+            n_in, n_out = usage.prompt_tokens, usage.completion_tokens
+        else:  # server didn't report usage: estimate (~4 chars/token) so the cap still works
+            n_in = sum(len(m["content"]) for m in messages) // 4
+            n_out = (len(text) + reasoning_chars) // 4
+        self.budget.add(self.provider, n_in, n_out)
+        return Reply(text, n_in, n_out)
 
 
 class FakeLLM:

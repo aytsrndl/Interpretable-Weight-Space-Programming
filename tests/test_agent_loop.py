@@ -76,3 +76,31 @@ def test_budget_stops_the_loop(tmp_path, monkeypatch):
 def test_unknown_price_refuses_to_spend(tmp_path):
     with pytest.raises(Exception, match="no price"):
         Budget(tmp_path / "b.json").add("anthropic", 10, 10)
+
+
+def test_llm_streams_and_counts_tokens(tmp_path):
+    """LLM.chat must stream (ARC caps non-streaming at 8k) and record usage from the last chunk."""
+    from types import SimpleNamespace as NS
+
+    import llm as llm_mod
+
+    def chunk(content=None, usage=None, reasoning=None):
+        delta = NS(content=content, reasoning_content=reasoning)
+        return NS(choices=[NS(delta=delta)] if usage is None else [], usage=usage)
+
+    seen = {}
+
+    def create(**kw):
+        seen.update(kw)
+        return iter([chunk(reasoning="thinking..."), chunk("JUSTIFICATION: hi\n"), chunk("```python\nx=1\n```"),
+                     chunk(usage=NS(prompt_tokens=100, completion_tokens=40))])
+
+    m = llm_mod.LLM.__new__(llm_mod.LLM)
+    m.provider, m.model = "arc", "fake"
+    m.budget = Budget(tmp_path / "b.json")
+    m.client = NS(chat=NS(completions=NS(create=create)))
+
+    r = m.chat([{"role": "user", "content": "hello"}])
+    assert seen["stream"] is True and seen["stream_options"] == {"include_usage": True}
+    assert r.text == "JUSTIFICATION: hi\n```python\nx=1\n```"
+    assert (r.input_tokens, r.output_tokens) == (100, 40) and m.budget.total_tokens == 140
