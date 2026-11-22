@@ -1,0 +1,5 @@
+numpy>=1.26
+openai>=1.40        # one client for ARC (OpenAI-compatible) and other providers
+python-dotenv>=1.0
+matplotlib>=3.8
+pytest>=8.0
