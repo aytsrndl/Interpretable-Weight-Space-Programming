@@ -16,13 +16,19 @@ pip install -r requirements.txt
 cp .env.example .env   # add your ARC key (needed from Step 6 on)
 ```
 
+## Running
+```bash
+python -m pytest -q              # all checks
+python -m handwritten.reverse    # hand-written reverse model: 100% visible and hidden
+```
+
 ## Steps
 | Step | File | Status |
 |---|---|---|
-| 1 | `model.py` — numpy transformer | |
-| 2 | `tasks.py` — reverse / add / sort | |
-| 3 | `evaluator.py` — fixed scoring | |
-| 4 | `handwritten/reverse.py` ⏸ | |
+| 1 | `model.py` — numpy transformer | done |
+| 2 | `tasks.py` — reverse / add / sort, 200 visible + 2,000 hidden each | done |
+| 3 | `evaluator.py` — fixed scoring | done |
+| 4 | `handwritten/reverse.py` ⏸ | done: 100% hidden, 4,510 params (82 nonzero) |
 | 5 | `sandbox.py` | |
 | 6 | `agent_loop.py` ⏸ | |
 | 7 | `describe_rebuild.py` | |
