@@ -108,6 +108,12 @@ def build_user_prompt(task_name: str, history: list[dict], best: dict | None, ph
         f"TASK: {task.name}\n{task.prompt}",
         f"Separator token: {task.sep!r}. The prompt is {task.prompt_len} tokens "
         f"(positions 0..{task.prompt_len - 1}); the answer is {task.output_len} tokens.",
+        "PREDICTION ALIGNMENT (off-by-one errors are the most common bug): the logits at "
+        "position p predict the token at position p+1. So:\n"
+        + "\n".join(f"  logits at position {task.prompt_len - 1 + i} (holding "
+                    f"{'the separator' if i == 0 else f'answer token {i}'}) must predict answer token {i + 1}"
+                    for i in range(task.output_len))
+        + "\nPredictions at positions before the separator are never used.",
         "Visible examples (position:token for the full sequence, answer included):\n"
         + format_examples(task_name),
     ]
