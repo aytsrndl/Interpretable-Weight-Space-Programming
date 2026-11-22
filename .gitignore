@@ -1,0 +1,12 @@
+# Secrets — never commit API keys
+.env
+
+# Run logs and plots (regenerated from seeds)
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
