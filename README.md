@@ -18,9 +18,18 @@ cp .env.example .env   # add your ARC key (needed from Step 6 on)
 
 ## Running
 ```bash
-python -m pytest -q              # all checks
+python -m pytest -q              # all checks (no API key needed)
 python -m handwritten.reverse    # hand-written reverse model: 100% visible and hidden
+
+python agent_loop.py --list-models              # ARC models live right now
+python agent_loop.py --task reverse --iters 5   # short smoke test
+python agent_loop.py --task all                 # full run + summary table
 ```
+Logs go to `runs/<task>/<timestamp>/` (`iter_XX.json`, `best.py`, `best.npz`, `summary.json`).
+Token/spend usage accumulates in `runs/budget.json`; delete it to reset the cap.
+
+The agent only sees visible-set (200) results. Hidden-set (2,000) accuracy of the best
+model is computed once after the loop and never shown to the agent.
 
 ## Steps
 | Step | File | Status |
@@ -29,8 +38,8 @@ python -m handwritten.reverse    # hand-written reverse model: 100% visible and 
 | 2 | `tasks.py` — reverse / add / sort, 200 visible + 2,000 hidden each | done |
 | 3 | `evaluator.py` — fixed scoring | done |
 | 4 | `handwritten/reverse.py` ⏸ | done: 100% hidden, 4,510 params (82 nonzero) |
-| 5 | `sandbox.py` | |
-| 6 | `agent_loop.py` ⏸ | |
+| 5 | `sandbox.py` + `sandbox_child.py` | done: AST allowlist, subprocess, timeout, no keys in env |
+| 6 | `agent_loop.py` + `llm.py` ⏸ | built, tested with a fake LLM; awaiting first real run |
 | 7 | `describe_rebuild.py` | |
 | 8 | `ablation.py` ⏸ | |
 | 9 | `golf.py` (stretch) | |

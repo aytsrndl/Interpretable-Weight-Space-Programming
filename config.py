@@ -25,4 +25,15 @@ PRICE_PER_MTOK = {"arc": (0.0, 0.0)}  # (input, output) $/1M tokens; fill in for
 
 # ---- Agent loop (Step 6+) ----------------------------------------------------
 MAX_ITERS = 30
+COMPRESS_AFTER_SOLVED = True  # after 100% visible, keep iterating to shrink param_count
+COMPRESS_PATIENCE = 5         # stop compressing after this many iterations with no smaller model
+TEMPERATURE = 0.7
+SEED = 0                      # sent to the API where supported (ARC serves via vLLM)
+MAX_OUTPUT_TOKENS = 16_000    # reasoning models spend output tokens thinking
+
+# ---- Sandbox (Step 5) --------------------------------------------------------
 SANDBOX_TIMEOUT_S = 10
+# Architecture the agent gets unless its code sets CONFIG = {...}.
+DEFAULT_ARCH = dict(d_model=64, n_layers=2, n_heads=2, d_head=16, d_mlp=64)
+# Upper bounds on any CONFIG the agent picks, to keep scoring fast.
+ARCH_LIMITS = dict(d_model=256, n_layers=4, n_heads=8, d_head=64, d_mlp=512)
